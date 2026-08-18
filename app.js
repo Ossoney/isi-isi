@@ -1373,8 +1373,9 @@ async function finishOnboarding() {
     render();
     toast(t('toast_group_created', {name: groupName}));
   } catch (e) {
-    console.error('Error creating group:', e);
-    toast('Error al crear el grupo');
+    const errMsg = e?.message || e?.error_description || e?.code || JSON.stringify(e);
+    console.error('Error creating group:', errMsg, e);
+    toast('Error: ' + String(errMsg).slice(0, 100));
     document.getElementById('onboard-finish').disabled = false;
     document.getElementById('onboard-finish').textContent = '¡Empezar!';
   }
