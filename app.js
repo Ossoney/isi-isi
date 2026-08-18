@@ -302,51 +302,60 @@ let confirmCallback = null;
 let onboardStep = 0;
 let onboardMembers = [];
 
-// ---- Persistence ----
-function save() {
+// ---- Persistence (Local only for IDs and current user) ----
+function saveLocal() {
   try {
-    if (db.activeGroupId) {
-      db.groups[db.activeGroupId] = {
-        group: state.group,
-        expenses: state.expenses,
-        payments: state.payments
-      };
+    const localDb = {
+      activeGroupId: db.activeGroupId,
+      users: {}
+    };
+    if (db.activeGroupId && state.group.currentUser) {
+      localDb.users[db.activeGroupId] = state.group.currentUser;
     }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
-  } catch (e) { /* quota exceeded */ }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(localDb));
+  } catch (e) {}
 }
 
-function load() {
+async function loadActiveGroup() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      db = JSON.parse(raw);
-      if (!db.groups) db.groups = {};
-      
-      // Fallback for legacy format
-      const legacyRaw = localStorage.getItem('isi-isi-data');
-      if (legacyRaw && Object.keys(db.groups).length === 0) {
-        const legacyData = JSON.parse(legacyRaw);
-        const legacyId = uid();
-        db.groups[legacyId] = {
-          group: legacyData.group || { name: 'isi-isi', currency: '€', members: [], currentUser: null },
-          expenses: legacyData.expenses || [],
-          payments: legacyData.payments || []
-        };
-        db.activeGroupId = legacyId;
-        localStorage.removeItem('isi-isi-data');
-      }
-
-      if (db.activeGroupId && db.groups[db.activeGroupId]) {
-        const active = db.groups[db.activeGroupId];
-        state.group = active.group;
-        state.expenses = active.expenses || [];
-        state.payments = active.payments || [];
+      const localDb = JSON.parse(raw);
+      if (localDb.activeGroupId) {
+        db.activeGroupId = localDb.activeGroupId;
+        await refreshDataFromSupabase();
+        if (localDb.users && localDb.users[db.activeGroupId]) {
+          state.group.currentUser = localDb.users[db.activeGroupId];
+        }
+        sbSubscribe(db.activeGroupId, handleRealtimeUpdate);
         return true;
       }
     }
-  } catch (e) { /* corrupted */ }
+  } catch (e) { console.error('Error loading group', e); }
   return false;
+}
+
+async function refreshDataFromSupabase() {
+  if (!db.activeGroupId) return;
+  const data = await sbLoadGroup(db.activeGroupId);
+  state.group = data.groupData;
+  state.group.members = data.members;
+  state.expenses = data.expenses;
+  state.payments = data.payments;
+  // Preserve currentUser from local state
+  saveLocal();
+}
+
+let _isFetchingRealtime = false;
+async function handleRealtimeUpdate() {
+  if (_isFetchingRealtime) return;
+  _isFetchingRealtime = true;
+  try {
+    await refreshDataFromSupabase();
+    render();
+  } finally {
+    _isFetchingRealtime = false;
+  }
 }
 
 // ---- Utilities ----
@@ -863,7 +872,7 @@ function adjShare(id, delta) { splitShares[id] = Math.max(0, (splitShares[id] ||
 function setSplitExact(id, val) { splitExact[id] = val; renderSplitConfig(); }
 
 // ---- Save Expense ----
-function handleSaveExpense(e) {
+async function handleSaveExpense(e) {
   e.preventDefault();
   const title = document.getElementById('expense-title-input').value.trim();
   const amount = parseFloat(document.getElementById('expense-amount-input').value);
@@ -897,18 +906,26 @@ function handleSaveExpense(e) {
 
   if (Object.keys(splits).length === 0) { toast(t('toast_select_participant')); return; }
 
-  if (editingExpenseId) {
-    const idx = state.expenses.findIndex(ex => ex.id === editingExpenseId);
-    if (idx !== -1) {
-      state.expenses[idx] = { ...state.expenses[idx], title, amount, paidBy: selectedPayer, category: selectedCategory, date, splitMode, splits };
+  try {
+    const expData = { title, amount, paidBy: selectedPayer, category: selectedCategory, date, splitMode, splits };
+    if (editingExpenseId) {
+      expData.id = editingExpenseId;
+      await sbUpdateExpense(expData);
+      
+      const idx = state.expenses.findIndex(ex => ex.id === editingExpenseId);
+      if (idx !== -1) state.expenses[idx] = { ...state.expenses[idx], ...expData };
+      toast(t('toast_updated'));
+    } else {
+      const newExp = await sbCreateExpense(db.activeGroupId, expData);
+      state.expenses.unshift(newExp);
+      toast(t('toast_saved'));
     }
-    toast(t('toast_updated'));
-  } else {
-    state.expenses.push({ id: uid(), title, amount, paidBy: selectedPayer, category: selectedCategory, date, splitMode, splits, createdAt: new Date().toISOString() });
-    toast(t('toast_saved'));
+    closeModal('modal-expense'); 
+    render();
+  } catch (e) {
+    console.error('Error saving expense:', e);
+    toast('Error al guardar el gasto');
   }
-
-  save(); closeModal('modal-expense'); render();
 }
 
 // ---- Expense Detail ----
@@ -953,9 +970,16 @@ function editExpense(id) {
 
 function confirmDeleteExpense(id) {
   closeModal('modal-detail');
-  showConfirm(t('toast_confirm_delete_expense'), () => {
-    state.expenses = state.expenses.filter(e => e.id !== id);
-    save(); render(); toast(t('toast_deleted'));
+  showConfirm(t('toast_confirm_delete_expense'), async () => {
+    try {
+      await sbDeleteExpense(id);
+      state.expenses = state.expenses.filter(e => e.id !== id);
+      render(); 
+      toast(t('toast_deleted'));
+    } catch (e) {
+      console.error('Error deleting expense:', e);
+      toast('Error al eliminar');
+    }
   });
 }
 
@@ -963,9 +987,16 @@ function confirmDeleteExpense(id) {
 function settleDebt(fromId, toId, amount) {
   const from = getMember(fromId), to = getMember(toId);
   if (!from || !to) return;
-  showConfirm(t('toast_confirm_settle', {from: from.name, amount: fmt(amount), to: to.name}), () => {
-    state.payments.push({ id: uid(), from: fromId, to: toId, amount, date: new Date().toISOString() });
-    save(); render(); toast(t('toast_settled'));
+  showConfirm(t('toast_confirm_settle', {from: from.name, amount: fmt(amount), to: to.name}), async () => {
+    try {
+      const newPayment = await sbCreatePayment(db.activeGroupId, fromId, toId, amount);
+      state.payments.push(newPayment);
+      render(); 
+      toast(t('toast_settled'));
+    } catch (e) {
+      console.error('Error settling debt:', e);
+      toast('Error al liquidar');
+    }
   }, t('settle'));
 }
 
@@ -985,30 +1016,54 @@ function renderGroupModal() {
       ${avatarHTML(m)}<span>${escapeHTML(m.name)}</span></div>`).join('');
 }
 
-function addMember() {
+async function addMember() {
   const input = document.getElementById('new-member-input');
   const name = input.value.trim();
   if (!name) return;
   if (state.group.members.some(m => m.name.toLowerCase() === name.toLowerCase())) { toast(t('toast_exists')); return; }
-  const nm = { id: uid(), name };
-  state.group.members.push(nm);
-  if (state.group.members.length === 1 && !state.group.currentUser) state.group.currentUser = nm.id;
-  input.value = '';
-  save(); renderGroupModal(); render();
+  
+  try {
+    const newMember = await sbCreateMember(db.activeGroupId, name);
+    state.group.members.push(newMember);
+    if (state.group.members.length === 1 && !state.group.currentUser) {
+      state.group.currentUser = newMember.id;
+      saveLocal();
+    }
+    input.value = '';
+    renderGroupModal(); render();
+  } catch (e) {
+    console.error('Error adding member', e);
+  }
 }
 
-function removeMember(id) {
+async function removeMember(id) {
   if (state.expenses.some(e => e.paidBy === id || (e.splits && id in e.splits))) { toast(t('toast_cannot_remove')); return; }
-  state.group.members = state.group.members.filter(m => m.id !== id);
-  if (state.group.currentUser === id) state.group.currentUser = null;
-  save(); renderGroupModal(); render(); toast(t('toast_removed_member'));
+  try {
+    await sbDeleteMember(id);
+    state.group.members = state.group.members.filter(m => m.id !== id);
+    if (state.group.currentUser === id) {
+      state.group.currentUser = null;
+      saveLocal();
+    }
+    renderGroupModal(); render(); toast(t('toast_removed_member'));
+  } catch (e) {
+    console.error('Error removing member', e);
+  }
 }
 
-function setCurrentUser(id) { state.group.currentUser = id; save(); renderGroupModal(); render(); }
+function setCurrentUser(id) { state.group.currentUser = id; saveLocal(); renderGroupModal(); render(); }
 
-function updateGroupName() {
+async function updateGroupName() {
   const name = document.getElementById('group-name-input').value.trim();
-  if (name) { state.group.name = name; save(); renderHeader(); }
+  if (name && name !== state.group.name) { 
+    try {
+      await sbUpdateGroupName(db.activeGroupId, name);
+      state.group.name = name; 
+      renderHeader(); 
+    } catch (e) {
+      console.error('Error updating name', e);
+    }
+  }
 }
 
 // ---- Groups List Modal ----
@@ -1016,38 +1071,40 @@ function openGroupsListModal() { renderGroupsList(); openModal('modal-groups-lis
 
 function renderGroupsList() {
   const container = document.getElementById('groups-list-container');
-  const groupIds = Object.keys(db.groups);
+  // Read known groups from local storage cache
+  const raw = localStorage.getItem(STORAGE_KEY);
+  let localDb = { users: {} };
+  try { if (raw) localDb = JSON.parse(raw); } catch (e) {}
+
+  const groupIds = Object.keys(localDb.users || {});
   
   if (groupIds.length === 0) {
     container.innerHTML = `<div class="empty-state"><div class="empty-text">No hay grupos creados.</div></div>`;
     return;
   }
 
+  // We only have IDs, but we need names. We rely on the fact that if it's the active group we have it in state.
   container.innerHTML = groupIds.map(id => {
-    const data = db.groups[id];
     const isActive = id === db.activeGroupId;
-    const expenseCount = data.expenses ? data.expenses.length : 0;
-    const memberCount = data.group?.members ? data.group.members.length : 0;
-
+    const nameStr = isActive ? state.group.name : `Grupo ${id.slice(0,5)}...`;
+    
     return `
       <div class="group-list-item ${isActive ? 'active' : ''}" onclick="switchActiveGroup('${id}')">
         <div class="group-info">
-          <div class="group-name">${escapeHTML(data.group?.name || 'Grupo')}</div>
-          <div class="group-meta">${memberCount} ${t('members').toLowerCase()} · ${expenseCount} ${t('nav_gastos').toLowerCase()}</div>
+          <div class="group-name">${escapeHTML(nameStr)}</div>
         </div>
         <button class="btn-delete-group" onclick="event.stopPropagation(); deleteGroup('${id}')" title="${t('delete')}">×</button>
       </div>`;
   }).join('');
 }
 
-function switchActiveGroup(id) {
-  if (db.groups[id]) {
-    db.activeGroupId = id;
-    state.group = db.groups[id].group;
-    state.expenses = db.groups[id].expenses || [];
-    state.payments = db.groups[id].payments || [];
-    save();
+async function switchActiveGroup(id) {
+  sbUnsubscribe();
+  db.activeGroupId = id;
+  const loaded = await loadActiveGroup();
+  if (loaded) {
     closeModal('modal-groups-list');
+    hideOnboarding();
     render();
   }
 }
@@ -1057,44 +1114,50 @@ function createNewGroup() {
   const name = input.value.trim();
   if (!name) return;
   
-  // Close group list modal and show onboarding steps configured for this new group
   closeModal('modal-groups-list');
   input.value = '';
   
-  // Set up onboarding fields for a fresh group
   document.getElementById('onboard-group-name').value = name;
   document.getElementById('onboard-your-name').value = '';
   onboardMembers = [];
+  sbUnsubscribe();
   showOnboarding();
-  onboardStep = 1; // skip group name step since we just typed it
+  onboardStep = 1;
   renderOnboardStep();
 }
 
 function deleteGroup(id) {
-  const groupName = db.groups[id]?.group?.name || 'Grupo';
-  showConfirm(t('toast_confirm_delete_group', {name: groupName}), () => {
-    delete db.groups[id];
-    
-    const remainingIds = Object.keys(db.groups);
-    if (remainingIds.length > 0) {
-      if (db.activeGroupId === id) {
-        db.activeGroupId = remainingIds[0];
-        state.group = db.groups[db.activeGroupId].group;
-        state.expenses = db.groups[db.activeGroupId].expenses || [];
-        state.payments = db.groups[db.activeGroupId].payments || [];
+  const groupName = id === db.activeGroupId ? state.group.name : 'este grupo';
+  showConfirm(t('toast_confirm_delete_group', {name: groupName}), async () => {
+    try {
+      await sbDeleteGroup(id);
+      
+      const raw = localStorage.getItem(STORAGE_KEY);
+      let localDb = { users: {} };
+      try { if (raw) localDb = JSON.parse(raw); } catch (e) {}
+      
+      delete localDb.users[id];
+      if (localDb.activeGroupId === id) {
+        const remainingIds = Object.keys(localDb.users);
+        localDb.activeGroupId = remainingIds.length > 0 ? remainingIds[0] : '';
       }
-      save();
-      renderGroupsList();
-      render();
-    } else {
-      // No groups left
-      db.activeGroupId = '';
-      state.group = { name: 'isi-isi', currency: '€', members: [], currentUser: null };
-      state.expenses = [];
-      state.payments = [];
-      save();
-      closeModal('modal-groups-list');
-      showOnboarding();
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(localDb));
+      
+      if (localDb.activeGroupId) {
+        await switchActiveGroup(localDb.activeGroupId);
+        renderGroupsList();
+      } else {
+        sbUnsubscribe();
+        db.activeGroupId = '';
+        state.group = { name: 'isi-isi', currency: '€', members: [], currentUser: null };
+        state.expenses = [];
+        state.payments = [];
+        closeModal('modal-groups-list');
+        showOnboarding();
+      }
+    } catch (e) {
+      console.error('Error deleting group', e);
+      toast('Error al eliminar');
     }
   });
 }
@@ -1127,22 +1190,8 @@ function shareGroup() {
   const transfers = simplifyDebts();
   const total = totalSpent();
 
-  // Create a shareable URL containing the entire state serialized and encoded
-  // Using URL-safe base64 to avoid + / = characters being mangled by WhatsApp or browsers
-  let shareUrl = window.location.href.split('?')[0];
-  try {
-    const dataStr = JSON.stringify({
-      group: state.group,
-      expenses: state.expenses,
-      payments: state.payments
-    });
-    const b64 = btoa(unescape(encodeURIComponent(dataStr)));
-    // Convert to URL-safe base64: replace + -> -, / -> _, remove trailing =
-    const urlSafeB64 = b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    shareUrl += `?data=${urlSafeB64}`;
-  } catch (e) {
-    console.error('Error generating share URL:', e);
-  }
+  // Create a shareable URL containing the group UUID
+  let shareUrl = window.location.href.split('?')[0] + '?group=' + db.activeGroupId;
 
   let text = `💸 *${state.group.name}*\n`;
   text += `${t('total_group_spend')}: ${fmt(total)}\n`;
@@ -1211,7 +1260,7 @@ function resetData() {
     state.group = { name: 'isi-isi', currency: '€', members: [], currentUser: null };
     state.expenses = [];
     state.payments = [];
-    save();
+    saveLocal();
     render();
     showOnboarding();
     toast(t('reset'));
@@ -1293,36 +1342,42 @@ function removeOnboardMember(index) {
   renderOnboardMembers();
 }
 
-function finishOnboarding() {
+async function finishOnboarding() {
   const groupName = document.getElementById('onboard-group-name').value.trim() || 'Group';
   const yourName = document.getElementById('onboard-your-name').value.trim();
 
   if (!yourName) { toast(t('onboard_step1_placeholder')); onboardStep = 1; renderOnboardStep(); return; }
 
-  const youMember = { id: uid(), name: yourName };
-  const otherMembers = onboardMembers.map(name => ({ id: uid(), name }));
+  try {
+    // Show loading state
+    document.getElementById('onboard-finish').disabled = true;
+    document.getElementById('onboard-finish').textContent = 'Creando grupo...';
 
-  const newGroupId = uid();
-  db.groups[newGroupId] = {
-    group: {
-      name: groupName,
-      currency: '€',
-      members: [youMember, ...otherMembers],
-      currentUser: youMember.id,
-    },
-    expenses: [],
-    payments: []
-  };
-  db.activeGroupId = newGroupId;
-  
-  state.group = db.groups[newGroupId].group;
-  state.expenses = [];
-  state.payments = [];
+    // Create group in Supabase
+    const group = await sbCreateGroup(groupName, '€');
+    
+    // Create current user
+    const youMember = await sbCreateMember(group.id, yourName);
+    
+    // Create other members sequentially (or Promise.all)
+    for (const name of onboardMembers) {
+      await sbCreateMember(group.id, name);
+    }
 
-  save();
-  hideOnboarding();
-  render();
-  toast(t('toast_group_created', {name: groupName}));
+    db.activeGroupId = group.id;
+    state.group.currentUser = youMember.id;
+    saveLocal();
+
+    await loadActiveGroup();
+    hideOnboarding();
+    render();
+    toast(t('toast_group_created', {name: groupName}));
+  } catch (e) {
+    console.error('Error creating group:', e);
+    toast('Error al crear el grupo');
+    document.getElementById('onboard-finish').disabled = false;
+    document.getElementById('onboard-finish').textContent = '¡Empezar!';
+  }
 }
 
 function initOnboardingEvents() {
@@ -1423,57 +1478,70 @@ function initEvents() {
 //   INITIALIZATION
 // ============================================
 
-function init() {
+async function init() {
   localizeDOM();
-
-  // Load existing database first
-  let loaded = load();
+  initEvents();
+  initOnboardingEvents();
 
   const urlParams = new URLSearchParams(window.location.search);
-  const sharedData = urlParams.get('data');
+  const sharedGroupId = urlParams.get('group');
 
-  if (sharedData) {
+  if (sharedGroupId) {
     try {
-      // Decode URL-safe base64 (- -> +, _ -> /, restore = padding)
-      const b64 = sharedData.replace(/-/g, '+').replace(/_/g, '/');
-      const padded = b64 + '=='.slice(0, (4 - b64.length % 4) % 4);
-      const decodedData = decodeURIComponent(escape(atob(padded)));
-      const parsed = JSON.parse(decodedData);
-      if (parsed && parsed.group) {
-        const importId = uid();
-        db.groups[importId] = {
-          group: parsed.group,
-          expenses: parsed.expenses || [],
-          payments: parsed.payments || []
-        };
-        db.activeGroupId = importId;
-        
-        state.group = parsed.group;
-        state.expenses = parsed.expenses || [];
-        state.payments = parsed.payments || [];
-        
-        save();
-        loaded = true;
-        toast(t('toast_import_ok'));
-        
-        const cleanUrl = window.location.protocol + "//" + window.location.host + window.location.pathname;
-        window.history.replaceState({ path: cleanUrl }, '', cleanUrl);
-      }
+      // 1. Fetch group details to show join screen
+      const data = await sbLoadGroup(sharedGroupId);
+      document.getElementById('join-group-name').textContent = data.groupData.name;
+      
+      const membersList = document.getElementById('join-members-list');
+      membersList.innerHTML = data.members.map(m => `
+        <div class="chip" onclick="joinGroupAs('${sharedGroupId}', '${m.id}')">
+          ${avatarHTML(m)}<span>${escapeHTML(m.name)}</span>
+        </div>
+      `).join('');
+
+      document.getElementById('join-add-member-btn').onclick = async () => {
+        const name = document.getElementById('join-new-member-input').value.trim();
+        if (!name) return;
+        const newMember = await sbCreateMember(sharedGroupId, name);
+        joinGroupAs(sharedGroupId, newMember.id);
+      };
+
+      document.getElementById('app-main').style.display = 'none';
+      document.getElementById('app-header').style.display = 'none';
+      document.getElementById('join-screen').classList.remove('hidden');
+      return;
     } catch (e) {
-      console.error('Error importing shared group:', e);
+      console.error('Error fetching shared group:', e);
       toast(t('toast_import_err'));
     }
   }
 
-  initEvents();
-  initOnboardingEvents();
-
+  // Normal flow
+  const loaded = await loadActiveGroup();
   if (!loaded) {
     showOnboarding();
   } else {
     hideOnboarding();
     render();
   }
+}
+
+async function joinGroupAs(groupId, memberId) {
+  db.activeGroupId = groupId;
+  state.group.currentUser = memberId;
+  saveLocal();
+  
+  const cleanUrl = window.location.protocol + "//" + window.location.host + window.location.pathname;
+  window.history.replaceState({ path: cleanUrl }, '', cleanUrl);
+
+  document.getElementById('join-screen').classList.add('hidden');
+  document.getElementById('app-main').style.display = 'block';
+  document.getElementById('app-header').style.display = 'flex';
+  
+  await loadActiveGroup();
+  hideOnboarding();
+  render();
+  toast(t('toast_import_ok'));
 }
 
 document.addEventListener('DOMContentLoaded', init);

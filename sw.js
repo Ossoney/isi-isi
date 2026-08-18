@@ -3,11 +3,12 @@
    Cache-first strategy for offline support
    ============================================ */
 
-const CACHE_NAME = 'isi-isi-v2';
+const CACHE_NAME = 'isi-isi-v3';
 
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
+  './supabase-client.js',
   './app.js',
   './style.css',
   './manifest.json',
