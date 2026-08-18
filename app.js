@@ -114,6 +114,7 @@ const DICS = {
     toast_confirm_reset: '¿Borrar TODOS los datos de todos los grupos y empezar de cero?',
     toast_confirm_delete_group: '¿Eliminar el grupo "{{name}}"? Todos sus gastos se perderán.',
     toast_confirm_delete_expense: '¿Eliminar este gasto? Esta acción no se puede deshacer.',
+    toast_copied_to_clipboard: '¡Enlace y resumen copiados al portapapeles!',
     empty_no_expenses: 'No hay gastos aún.<br>Pulsa <strong>+</strong> para añadir uno.',
     empty_no_members: 'Añade miembros al grupo primero.',
     empty_no_stats: 'Las estadísticas aparecerán cuando añadas gastos.',
@@ -221,6 +222,7 @@ const DICS = {
     toast_confirm_reset: 'Erase ALL data of all groups and start fresh?',
     toast_confirm_delete_group: 'Delete group "{{name}}"? All its expenses will be lost.',
     toast_confirm_delete_expense: 'Delete this expense? This cannot be undone.',
+    toast_copied_to_clipboard: 'Link and summary copied to clipboard!',
     empty_no_expenses: 'No expenses yet.<br>Tap <strong>+</strong> to add one.',
     empty_no_members: 'Add group members first.',
     empty_no_stats: 'Stats will appear when you add expenses.',
@@ -1099,6 +1101,29 @@ function deleteGroup(id) {
   });
 }
 
+// ---- Clipboard Fallback Helper ----
+function copyToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text);
+  } else {
+    const textArea = document.createElement("textarea");
+    textArea.value = text;
+    textArea.style.position = "fixed";
+    textArea.style.opacity = "0";
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    try {
+      document.execCommand('copy');
+      return Promise.resolve();
+    } catch (err) {
+      return Promise.reject(err);
+    } finally {
+      document.body.removeChild(textArea);
+    }
+  }
+}
+
 // ---- Share ----
 function shareGroup() {
   const transfers = simplifyDebts();
@@ -1135,16 +1160,26 @@ function shareGroup() {
   text += `\n🔗 *${t('share_interactive_link')}*\n${shareUrl}\n\n`;
   text += `_${t('sent_from_app')}_`;
 
+  // Always copy to clipboard as a fast fallback
+  copyToClipboard(text)
+    .then(() => {
+      toast(t('toast_copied_to_clipboard'));
+    })
+    .catch((err) => {
+      console.error('Clipboard copy failed:', err);
+    });
+
+  // Try to open native share if available (mobile HTTPS), otherwise WhatsApp link
   if (navigator.share) {
     navigator.share({
       title: state.group.name + ' — Gastos',
       text: text
     }).catch(() => {
-      const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
+      const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
       window.open(url, '_blank');
     });
   } else {
-    const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
+    const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
     window.open(url, '_blank');
   }
 }
