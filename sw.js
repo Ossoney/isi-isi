@@ -3,7 +3,7 @@
    Cache-first strategy for offline support
    ============================================ */
 
-const CACHE_NAME = 'isi-isi-v1';
+const CACHE_NAME = 'isi-isi-v2';
 
 const ASSETS_TO_CACHE = [
   './',
