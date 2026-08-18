@@ -126,7 +126,6 @@ const DICS = {
     actividad_reciente: 'Actividad reciente',
     first_expense_prompt: '¡Añade tu primer gasto!<br>Pulsa el botón <strong>+</strong> para empezar.',
     share_interactive_link: 'Ver grupo interactivo:',
-    sent_from_app: 'Enviado desde isi-isi',
   },
   en: {
     months: ['January','February','March','April','May','June','July','August','September','October','November','December'],
@@ -234,7 +233,6 @@ const DICS = {
     actividad_reciente: 'Recent activity',
     first_expense_prompt: 'Add your first expense!<br>Press the <strong>+</strong> button to start.',
     share_interactive_link: 'View interactive group:',
-    sent_from_app: 'Sent from isi-isi',
   }
 };
 
@@ -1157,8 +1155,7 @@ function shareGroup() {
     text += `✅ ${t('state_settled_subtitle')}\n`;
   }
 
-  text += `\n🔗 *${t('share_interactive_link')}*\n${shareUrl}\n\n`;
-  text += `_${t('sent_from_app')}_`;
+  text += `\n🔗 *${t('share_interactive_link')}*\n${shareUrl}`;
 
   // Always copy to clipboard as a fast fallback
   copyToClipboard(text)
