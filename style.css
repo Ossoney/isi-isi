@@ -1590,3 +1590,54 @@ img { display: block; max-width: 100%; }
 }
 .onboard-actions .btn-primary,
 .onboard-actions .btn-secondary { flex: 1; }
+
+/* ===== JOIN SCREEN MEMBER BUTTONS ===== */
+.join-members-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 10px;
+  margin: 12px 0 4px;
+}
+.join-member-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 10px;
+  background: var(--glass-bg);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.9rem;
+}
+.join-member-btn:hover, .join-member-btn:active {
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb, 99, 102, 241), 0.15);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+.join-member-btn .avatar {
+  width: 48px;
+  height: 48px;
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+.join-member-name {
+  font-weight: 600;
+  text-align: center;
+  word-break: break-word;
+}
+
+/* ===== CONNECTION DOT ===== */
+.conn-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  transition: background 0.4s;
+}
+.conn-online  { background: #22c55e; box-shadow: 0 0 6px #22c55e88; }
+.conn-offline { background: #f59e0b; }

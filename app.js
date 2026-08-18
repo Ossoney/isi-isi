@@ -1489,23 +1489,45 @@ async function init() {
 
   if (sharedGroupId) {
     try {
-      // 1. Fetch group details to show join screen
+      // Fetch group details to show join screen
       const data = await sbLoadGroup(sharedGroupId);
       document.getElementById('join-group-name').textContent = data.groupData.name;
-      
-      const membersList = document.getElementById('join-members-list');
-      membersList.innerHTML = data.members.map(m => `
-        <div class="chip" onclick="joinGroupAs('${sharedGroupId}', '${m.id}')">
-          ${avatarHTML(m)}<span>${escapeHTML(m.name)}</span>
-        </div>
-      `).join('');
 
+      const membersList = document.getElementById('join-members-list');
+      const membersSection = document.getElementById('join-members-section');
+      const emptyMsg = document.getElementById('join-empty-msg');
+
+      if (data.members.length === 0) {
+        // No members yet — show only the "add yourself" input
+        membersSection.classList.add('hidden');
+        emptyMsg.classList.remove('hidden');
+      } else {
+        // Show member buttons
+        membersList.innerHTML = data.members.map(m => `
+          <button class="join-member-btn" onclick="joinGroupAs('${sharedGroupId}', '${m.id}')">
+            ${avatarHTML(m)}
+            <span class="join-member-name">${escapeHTML(m.name)}</span>
+          </button>
+        `).join('');
+      }
+
+      const joinInput = document.getElementById('join-new-member-input');
       document.getElementById('join-add-member-btn').onclick = async () => {
-        const name = document.getElementById('join-new-member-input').value.trim();
-        if (!name) return;
-        const newMember = await sbCreateMember(sharedGroupId, name);
-        joinGroupAs(sharedGroupId, newMember.id);
+        const name = joinInput.value.trim();
+        if (!name) { joinInput.focus(); return; }
+        try {
+          document.getElementById('join-add-member-btn').disabled = true;
+          const newMember = await sbCreateMember(sharedGroupId, name);
+          joinGroupAs(sharedGroupId, newMember.id);
+        } catch (e) {
+          const msg = e?.message || JSON.stringify(e);
+          toast('Error al unirse: ' + msg.slice(0, 80));
+          document.getElementById('join-add-member-btn').disabled = false;
+        }
       };
+      joinInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); document.getElementById('join-add-member-btn').click(); }
+      });
 
       document.getElementById('app-main').style.display = 'none';
       document.getElementById('app-header').style.display = 'none';
