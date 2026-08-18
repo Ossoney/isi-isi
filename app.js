@@ -1426,14 +1426,17 @@ function initEvents() {
 function init() {
   localizeDOM();
 
-  // Check for shared URL data first
-  let loaded = false;
+  // Load existing database first
+  let loaded = load();
+
   const urlParams = new URLSearchParams(window.location.search);
   const sharedData = urlParams.get('data');
 
   if (sharedData) {
     try {
-      const decodedData = decodeURIComponent(escape(atob(sharedData)));
+      // Replace spaces back to plus signs, because URLSearchParams converts + to space
+      const base64 = sharedData.replace(/ /g, '+');
+      const decodedData = decodeURIComponent(escape(atob(base64)));
       const parsed = JSON.parse(decodedData);
       if (parsed && parsed.group) {
         const importId = uid();
@@ -1459,10 +1462,6 @@ function init() {
       console.error('Error importing shared group:', e);
       toast(t('toast_import_err'));
     }
-  }
-
-  if (!loaded) {
-    loaded = load();
   }
 
   initEvents();

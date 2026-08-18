@@ -1381,7 +1381,7 @@ img { display: block; max-width: 100%; }
   bottom: calc(var(--navbar-h) + 24px);
   left: 50%;
   transform: translateX(-50%) translateY(100px);
-  z-index: 400;
+  z-index: 600;
   padding: var(--space-md) var(--space-lg);
   background: var(--bg-elevated);
   border: 1px solid var(--border-light);
