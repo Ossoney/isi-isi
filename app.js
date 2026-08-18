@@ -1128,6 +1128,7 @@ function shareGroup() {
   const total = totalSpent();
 
   // Create a shareable URL containing the entire state serialized and encoded
+  // Using URL-safe base64 to avoid + / = characters being mangled by WhatsApp or browsers
   let shareUrl = window.location.href.split('?')[0];
   try {
     const dataStr = JSON.stringify({
@@ -1135,8 +1136,10 @@ function shareGroup() {
       expenses: state.expenses,
       payments: state.payments
     });
-    const encoded = btoa(unescape(encodeURIComponent(dataStr)));
-    shareUrl += `?data=${encoded}`;
+    const b64 = btoa(unescape(encodeURIComponent(dataStr)));
+    // Convert to URL-safe base64: replace + -> -, / -> _, remove trailing =
+    const urlSafeB64 = b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    shareUrl += `?data=${urlSafeB64}`;
   } catch (e) {
     console.error('Error generating share URL:', e);
   }
@@ -1431,9 +1434,10 @@ function init() {
 
   if (sharedData) {
     try {
-      // Replace spaces back to plus signs, because URLSearchParams converts + to space
-      const base64 = sharedData.replace(/ /g, '+');
-      const decodedData = decodeURIComponent(escape(atob(base64)));
+      // Decode URL-safe base64 (- -> +, _ -> /, restore = padding)
+      const b64 = sharedData.replace(/-/g, '+').replace(/_/g, '/');
+      const padded = b64 + '=='.slice(0, (4 - b64.length % 4) % 4);
+      const decodedData = decodeURIComponent(escape(atob(padded)));
       const parsed = JSON.parse(decodedData);
       if (parsed && parsed.group) {
         const importId = uid();
